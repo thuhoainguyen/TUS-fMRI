@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python3 code/plot_anatomy_report.py)",
-      "Bash(wait)",
-      "Bash(python3 code/anatomy.py)"
-    ]
-  }
-}
