@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ok-plan"
+version = "0.1.0"
+description = "Visualize and report acoustic simulation results"
+requires-python = ">=3.9"
+dependencies = [
+    "nibabel>=5.0",
+    "matplotlib>=3.5",
+    "nilearn>=0.10",
+]
+
+[project.scripts]
+ok-plan = "ok_plan.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
