@@ -225,10 +225,11 @@ def _project_disc_to_2d(origin: np.ndarray, normal: np.ndarray,
     
     # Project and discard depth depending on the view angle
     if view_name in ("left", "right"):
-        xs_r = rim3d[:, 1] * (-1.0 if view_name == "right" else 1.0)
+        xs_r = rim3d[:, 1] * (1.0 if view_name == "right" else -1.0)
         return xs_r, rim3d[:, 2]
     elif view_name in ("front", "back"):
-        return rim3d[:, 0], rim3d[:, 2]
+        # Match neurological convention: negate X so patient-left is on viewer's right.
+        return -rim3d[:, 0], rim3d[:, 2]
     else:
         return rim3d[:, 0], rim3d[:, 1]
 
@@ -253,9 +254,11 @@ def _mesh_silhouette_2d(points: np.ndarray, tris: np.ndarray,
     if view_name in ("left", "right"):
         ys = points[:, 2]
         depth = points[:, 0] * (1.0 if view_name == "right" else -1.0)
-        xs = points[:, 1] * (-1.0 if view_name == "right" else 1.0)
+        xs = points[:, 1] * (1.0 if view_name == "right" else -1.0)
     elif view_name in ("front", "back"):
-        xs, ys = points[:, 0], points[:, 2]
+        # Negate X so the image matches neurological convention:
+        # patient's Left appears on the viewer's right side of the frame.
+        xs, ys = -points[:, 0], points[:, 2]
         depth  = points[:, 1] * (1.0 if view_name == "front" else -1.0)
     else:
         xs, ys = points[:, 0], points[:, 1]
@@ -300,21 +303,24 @@ def plot_mesh_planned_all_positions(subject: str,
 
     # Coherent color palette (tab10/tab20 styled hex colors for high distinction)
     POSITION_COLORS = {
-        "Tx-2_L_pos-1": "#e6194b",  # Red
-        "Tx-2_L_pos-2": "#3cb44b",  # Green
-        "Tx-2_L_pos-3": "#4363d8",  # Blue
-        "Tx-2_L_pos-4": "#f58231",  # Orange
-        "Tx-2_L_pos-5": "#911eb4",  # Pink
-        "Tx-2_R_pos-1": "#42d4f4",  # Cyan
-        "Tx-2_R_pos-2": "#f032e6",  # Magenta
-        "Tx-2_R_pos-3": "#bfef45",  # Lime
-        "Tx-2_R_pos-4": "#fabed4",  # Soft Rose
-        "Tx-2_R_pos-5": "#a9a9a9",  # Gray
+        "L_1": "#e6194b",  # Red
+        "L_2": "#3cb44b",  # Lime
+        "L_3": "#4363d8",  # Orange
+        "L_4": "#f58231",  # Gray
+        "L_5": "#911eb4",  # Pink
+        "R_1": "#42d4f4",  # Cyan
+        "R_2": "#f032e6",  # Magenta
+        "R_3": "#bfef45",  # Green
+        "R_4": "#fabed4",  # Soft Rose
+        "R_5": "#a9a9a9",  # Blue
     }
     
+    import re
     color_map: Dict[int, np.ndarray] = {}
     for tx in selected:
-        hex_col = POSITION_COLORS.get(tx.description, "#888888")
+        match = re.match(r"Tx-2_([LR])_pos-(\d+)", tx.description or "")
+        label_name = f"{match.group(1)}_{match.group(2)}" if match else tx.description
+        hex_col = POSITION_COLORS.get(label_name, "#888888")
         r = int(hex_col[1:3], 16) / 255
         g = int(hex_col[3:5], 16) / 255
         b = int(hex_col[5:7], 16) / 255
@@ -337,7 +343,18 @@ def plot_mesh_planned_all_positions(subject: str,
         ax.set_facecolor("#f8f9fa")
         ax.set_aspect("equal")
         ax.set_axis_off()
-        ax.set_title(view_title, fontsize=11, fontweight="bold")
+        ax.set_title(view_title, fontsize=18, pad=6)
+        if view_name == "top":
+            ax.text(0.05, 0.90, "L", color="black", fontsize=16.0, fontweight="bold",
+                    transform=ax.transAxes, va="center", ha="left")
+            ax.text(0.95, 0.90, "R", color="black", fontsize=16.0, fontweight="bold",
+                    transform=ax.transAxes, va="center", ha="right")
+        elif view_name == "front":
+            # Neurological convention: patient-left on viewer's right
+            ax.text(0.05, 0.90, "R", color="black", fontsize=16.0, fontweight="bold",
+                    transform=ax.transAxes, va="center", ha="left")
+            ax.text(0.95, 0.90, "L", color="black", fontsize=16.0, fontweight="bold",
+                    transform=ax.transAxes, va="center", ha="right")
 
         # ── Scalp silhouette rendering (Greys_r depth shading) ──────────
         xs2d, ys2d, depth, tris_s = _mesh_silhouette_2d(points, tris, view_name)
@@ -378,15 +395,17 @@ def plot_mesh_planned_all_positions(subject: str,
     legend_handles = []
     for tx in selected:
         col = color_map.get(tx.index, np.array([0.5, 0.5, 0.5, 1.0]))
+        match = re.match(r"Tx-2_([LR])_pos-(\d+)", tx.description or "")
+        label_name = f"{match.group(1)}_{match.group(2)}" if match else tx.description
         legend_handles.append(_Patch(facecolor=col, edgecolor="none",
-                                     label=tx.description))
+                                     label=label_name))
     if legend_handles:
         fig.legend(handles=legend_handles, loc="center left",
-                   bbox_to_anchor=(0.88, 0.50), fontsize=8, frameon=True,
-                   title="Planned positions", title_fontsize=8)
+                   bbox_to_anchor=(0.88, 0.50), fontsize=16.0, frameon=True,
+                   title="Planned positions", title_fontsize=16.0)
 
-    fig.suptitle(f"{subject} | Head mesh with all planned transducer positions",
-                 fontsize=14, fontweight="bold", y=1.01)
+    #fig.suptitle(f"{subject} | Head mesh with all planned transducer positions",
+                # fontsize=14, fontweight="bold", y=1.01)
     fig.tight_layout(rect=[0, 0, 0.87, 0.97])
     fig.savefig(out_path, dpi=220, bbox_inches="tight", facecolor="white")
     plt.close(fig)

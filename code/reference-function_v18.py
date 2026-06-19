@@ -1642,7 +1642,7 @@ def _project_disc_to_2d(origin: np.ndarray, normal: np.ndarray,
                                             np.sin(theta)[:, None] * v)
     # Drop depth axis per view: (horizontal, vertical) on screen.
     if view_name in ("left", "right"):
-        xs_r = rim3d[:, 1] * (-1.0 if view_name == "right" else 1.0)
+        xs_r = rim3d[:, 1] * (1.0 if view_name == "right" else -1.0)
         return xs_r, rim3d[:, 2]
     elif view_name in ("front", "back"):  return rim3d[:, 0], rim3d[:, 2]
     else:                                  return rim3d[:, 0], rim3d[:, 1]  # top/bottom
@@ -1665,7 +1665,7 @@ def _mesh_silhouette_2d(points: np.ndarray, tris: np.ndarray,
         # Mirror horizontal axis for right view so the head faces the correct
         # direction: left-lateral → anterior (Y+) on the right; right-lateral →
         # anterior (Y+) on the left (mirror image, as anatomically expected).
-        xs = points[:, 1] * (-1.0 if view_name == "right" else 1.0)
+        xs = points[:, 1] * (1.0 if view_name == "right" else -1.0)
     elif view_name in ("front", "back"):
         xs, ys = points[:, 0], points[:, 2]
         # RAS: +Y = anterior (face). front camera at +Y → anterior = near → depth = +Y.

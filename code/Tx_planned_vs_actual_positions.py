@@ -230,7 +230,7 @@ def _project_disc_to_2d(origin: np.ndarray, normal: np.ndarray,
     
     # Project and discard depth depending on the view angle
     if view_name in ("left", "right"):
-        xs_r = rim3d[:, 1] * (-1.0 if view_name == "right" else 1.0)
+        xs_r = rim3d[:, 1] * (1.0 if view_name == "right" else -1.0)
         return xs_r, rim3d[:, 2]
     elif view_name in ("front", "back"):
         return rim3d[:, 0], rim3d[:, 2]
@@ -258,7 +258,7 @@ def _mesh_silhouette_2d(points: np.ndarray, tris: np.ndarray,
     if view_name in ("left", "right"):
         ys = points[:, 2]
         depth = points[:, 0] * (1.0 if view_name == "right" else -1.0)
-        xs = points[:, 1] * (-1.0 if view_name == "right" else 1.0)
+        xs = points[:, 1] * (1.0 if view_name == "right" else -1.0)
     elif view_name in ("front", "back"):
         xs, ys = points[:, 0], points[:, 2]
         depth  = points[:, 1] * (1.0 if view_name == "front" else -1.0)
@@ -289,6 +289,36 @@ def plot_planned_vs_actual_mesh(subject: str,
     """
     log.info(f"[{subject}] Rendering planned vs actual transducer positions...")
     points, tris, mid, rng = load_mesh(mesh_path)
+
+    import math
+    # Coordinate-based hemisphere resolution and deviation calculations
+    plan_left = next((tx for tx in planned_txs if tx.center[0] < 120.0), None)
+    plan_right = next((tx for tx in planned_txs if tx.center[0] >= 120.0), None)
+    act_left = next((tx for tx in actual_txs if tx.center[0] < 120.0), None)
+    act_right = next((tx for tx in actual_txs if tx.center[0] >= 120.0), None)
+
+    def compute_devs(plan_tx, act_tx):
+        if plan_tx is None or act_tx is None:
+            return np.zeros(3), np.zeros(3)
+        # Translation deviation: actual - planned
+        dxyz = act_tx.center - plan_tx.center
+        
+        # Rotation deviation: Rdiff = R_act @ R_plan.T
+        R_plan = plan_tx.matrix[:3, :3]
+        R_act = act_tx.matrix[:3, :3]
+        R_diff = R_act @ R_plan.T
+        
+        angle = math.acos(float(np.clip((np.trace(R_diff) - 1.0) / 2.0, -1.0, 1.0)))
+        if abs(angle) < 1e-12:
+            rvec = np.zeros(3)
+        else:
+            denom = 2.0 * math.sin(angle)
+            axis = np.array([R_diff[2, 1] - R_diff[1, 2], R_diff[0, 2] - R_diff[2, 0], R_diff[1, 0] - R_diff[0, 1]]) / denom
+            rvec = axis * math.degrees(angle)
+        return dxyz, rvec
+
+    dxyz_l, rvec_l = compute_devs(plan_left, act_left)
+    dxyz_r, rvec_r = compute_devs(plan_right, act_right)
 
     PLANNED_COL = "#ffc107"  # Yellow for planned
     ACTUAL_COL  = "#1e90ff"  # Blue for actual medoid
@@ -324,6 +354,11 @@ def plot_planned_vs_actual_mesh(subject: str,
         ax.set_aspect("equal")
         ax.set_axis_off()
         ax.set_title(view_title, fontsize=11, fontweight="bold")
+        if view_name in ("top", "front"):
+            ax.text(0.05, 0.90, "L", color="black", fontsize=16.0, fontweight="bold",
+                    transform=ax.transAxes, va="center", ha="left")
+            ax.text(0.95, 0.90, "R", color="black", fontsize=16.0, fontweight="bold",
+                    transform=ax.transAxes, va="center", ha="right")
 
         # ── Scalp silhouette rendering (Greys_r depth shading) ──────────
         xs2d, ys2d, depth, tris_s = _mesh_silhouette_2d(points, tris, view_name)
@@ -406,17 +441,38 @@ def plot_planned_vs_actual_mesh(subject: str,
 
     # ── Legend display ────────────────────────────────────────────────────────
     legend_handles = [
-        _Patch(facecolor=PLANNED_COL, edgecolor="none", label="Planned (Yellow)"),
-        _Patch(facecolor=ACTUAL_COL,  edgecolor="none", label="Actual Medoid (Blue)"),
-        _Patch(facecolor=OVERLAP_COL, edgecolor="none", label="Overlap (Green)"),
+        _Patch(facecolor=PLANNED_COL, edgecolor="none", label="Planned"),
+        _Patch(facecolor=ACTUAL_COL,  edgecolor="none", label="Post-hoc Medoid"),
+        _Patch(facecolor=OVERLAP_COL, edgecolor="none", label="Overlap"),
     ]
-    fig.legend(handles=legend_handles, loc="center left",
-               bbox_to_anchor=(0.88, 0.50), fontsize=9, frameon=True,
-               title="Transducer (62mm)", title_fontsize=9)
+    fig.legend(handles=legend_handles, loc="upper left",
+               bbox_to_anchor=(0.84, 0.85), fontsize=16.0, frameon=True,
+               title="Transducer (62mm)", title_fontsize=16.0)
 
-    fig.suptitle(f"{subject} | Head mesh planned vs actual medoid positions",
-                 fontsize=14, fontweight="bold", y=1.01)
-    fig.tight_layout(rect=[0, 0, 0.87, 0.97])
+    # Deviation statistics text box underneath the legend
+    stats_text = (
+        r"$\bf{Left\ Deviation:}$" + "\n"
+        f"X: {dxyz_l[0]:+.2f} mm\n"
+        f"Y: {dxyz_l[1]:+.2f} mm\n"
+        f"Z: {dxyz_l[2]:+.2f} mm\n"
+        f"Rot-X: {rvec_l[0]:+.2f}°\n"
+        f"Rot-Y: {rvec_l[1]:+.2f}°\n"
+        f"Rot-Z: {rvec_l[2]:+.2f}°\n\n"
+        r"$\bf{Right\ Deviation:}$" + "\n"
+        f"X: {dxyz_r[0]:+.2f} mm\n"
+        f"Y: {dxyz_r[1]:+.2f} mm\n"
+        f"Z: {dxyz_r[2]:+.2f} mm\n"
+        f"Rot-X: {rvec_r[0]:+.2f}°\n"
+        f"Rot-Y: {rvec_r[1]:+.2f}°\n"
+        f"Rot-Z: {rvec_r[2]:+.2f}°"
+    )
+    fig.text(0.84, 0.58, stats_text, fontsize=16.0,
+             verticalalignment="top", horizontalalignment="left",
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="#ffffff", edgecolor="#e2e8f0", alpha=0.9))
+
+    #fig.suptitle(f"{subject} | Head mesh planned vs actual medoid positions",
+                 #fontsize=14, fontweight="bold", y=1.01)
+    fig.tight_layout(rect=[0, 0, 0.83, 0.97])
     fig.savefig(out_path, dpi=220, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     log.info(f"[saved]  {out_path}")
@@ -427,100 +483,105 @@ def plot_planned_vs_actual_mesh(subject: str,
 if __name__ == "__main__":
     BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     INPUT_DIR = os.path.join(BASE, "data", "input")
-    MEDOID_DIR = os.path.join(BASE, "data", "gum", "medoid")
+    MEDOID_DIR = os.path.join(BASE, "data", "gum", "medoid_updated")
     SIMNIBS_DIR = os.path.join(BASE, "data", "simnibs")
     OUTPUT_DIR = os.path.join(BASE, "derivatives", "planned_vs_actual_positions")
-    
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    
+
     # 1. Load planned position indices from CSV
     csv_path = os.path.join(INPUT_DIR, "planned_positions_index.csv")
     if not os.path.exists(csv_path):
         log.error(f"planned_positions_index.csv file not found at: {csv_path}")
         sys.exit(1)
-        
+
     log.info(f"Loading planned position indices from {csv_path}")
     df_indices = pd.read_csv(csv_path)
     df_indices.columns = [c.strip() for c in df_indices.columns]
-    
+
     SUBJECTS = ["sub-03", "sub-04", "sub-05", "sub-06", "sub-11"]
-    
+    CONDITIONS = ["con", "exp"]
+
     log.info("Starting planned vs actual transducer positions mesh plotting pipeline...")
-    
+
     for sub in SUBJECTS:
         log.info(f"Processing {sub} ...")
-        
+
         # 1. Locate GMSH scalp head mesh file
         mesh_path = Path(os.path.join(SIMNIBS_DIR, sub, f"{sub}.msh"))
         if not mesh_path.exists():
             log.error(f"SimNIBS scalp head mesh file not found for {sub}: {mesh_path}")
             continue
-            
+
         # 2. Get planned transducer indices from CSV
         sub_row = df_indices[df_indices["Subject"] == sub]
         if sub_row.empty:
             log.error(f"No planned indices row found for {sub} in CSV.")
             continue
-            
+
         idx_left_plan = int(sub_row["index_left"].values[0])
         idx_right_plan = int(sub_row["index_right"].values[0])
-        
+
         # 3. Locate and load planned XML positions
         planned_xml_pattern = os.path.join(INPUT_DIR, sub, f"{sub}_GUMMarkers*.xml")
-        planned_xml_files = glob.glob(planned_xml_pattern)
+        planned_xml_files = [f for f in glob.glob(planned_xml_pattern)
+                             if not ("_ses-" in os.path.basename(f) or "_medoid" in os.path.basename(f))]
         if not planned_xml_files:
             log.error(f"Missing planned GUMMarkers XML in input for {sub} using pattern: {planned_xml_pattern}")
             continue
-            
         plan_xml_path = Path(planned_xml_files[0])
         try:
             planned_markers = parse_gummarkers(plan_xml_path)
         except Exception as e:
             log.exception(f"Failed to parse planned XML {plan_xml_path}: {e}")
             continue
-            
+
         plan_left_tx = next((elem for elem in planned_markers if elem.index == idx_left_plan), None)
         plan_right_tx = next((elem for elem in planned_markers if elem.index == idx_right_plan), None)
-        
+
         if plan_left_tx is None or plan_right_tx is None:
             log.error(f"Could not find planned Left (index {idx_left_plan}) or Right (index {idx_right_plan}) markers in {plan_xml_path.name}")
             continue
-            
+
         planned_txs = [plan_left_tx, plan_right_tx]
-        
-        # 4. Locate and load actual medoid XML positions
-        medoid_pattern = os.path.join(MEDOID_DIR, f"{sub}*.xml")
-        medoid_files = glob.glob(medoid_pattern)
-        if not medoid_files:
-            log.error(f"Missing actual medoid XML in medoid folder for {sub} using pattern: {medoid_pattern}")
-            continue
-            
-        med_xml_path = Path(medoid_files[0])
-        
-        try:
-            actual_markers = parse_gummarkers(med_xml_path)
-        except Exception as e:
-            log.exception(f"Failed to parse actual medoid XML {med_xml_path}: {e}")
-            continue
-            
-        # Robust coordinate-based hemisphere resolution (Left has RAS X < 120.0 mm, Right has RAS X >= 120.0 mm)
-        act_left_tx = next((elem for elem in actual_markers if elem.center[0] < 120.0), None)
-        act_right_tx = next((elem for elem in actual_markers if elem.center[0] >= 120.0), None)
-        
-        if act_left_tx is None or act_right_tx is None:
-            log.error(f"Could not resolve Left or Right actual medoid markers by coordinate in {med_xml_path.name}")
-            continue
-            
-        log.info(f"  [{sub}] Planned: Left={idx_left_plan} (center: {plan_left_tx.center.round(1)}), Right={idx_right_plan} (center: {plan_right_tx.center.round(1)})")
-        log.info(f"  [{sub}] Actual: Left={act_left_tx.index} (center: {act_left_tx.center.round(1)}), Right={act_right_tx.index} (center: {act_right_tx.center.round(1)})")
-        
-        actual_txs = [act_left_tx, act_right_tx]
-        
-        # 5. Render and save comparative planned vs actual medoid head mesh figure
-        try:
-            out_img_path = Path(os.path.join(OUTPUT_DIR, f"{sub}_planned_vs_actual_positions.png"))
-            plot_planned_vs_actual_mesh(sub, mesh_path, planned_txs, actual_txs, out_img_path)
-        except Exception as e:
-            log.exception(f"Failed to generate planned vs actual positions mesh plot for {sub}: {e}")
-            
+
+        # 4. Loop over conditions: one output image per condition
+        for cond in CONDITIONS:
+            xml_l = Path(os.path.join(MEDOID_DIR, f"{sub}_{cond}_l_medoid.xml"))
+            xml_r = Path(os.path.join(MEDOID_DIR, f"{sub}_{cond}_r_medoid.xml"))
+
+            if not xml_l.exists():
+                log.error(f"Missing Left medoid XML for {sub} {cond.upper()}: {xml_l}")
+                continue
+            if not xml_r.exists():
+                log.error(f"Missing Right medoid XML for {sub} {cond.upper()}: {xml_r}")
+                continue
+
+            try:
+                markers_l = parse_gummarkers(xml_l)
+                markers_r = parse_gummarkers(xml_r)
+            except Exception as e:
+                log.exception(f"Failed to parse medoid XMLs for {sub} {cond.upper()}: {e}")
+                continue
+
+            act_left_tx = markers_l[0] if markers_l else None
+            act_right_tx = markers_r[0] if markers_r else None
+
+            if act_left_tx is None or act_right_tx is None:
+                log.error(f"Empty medoid XML for {sub} {cond.upper()}")
+                continue
+
+            log.info(f"  [{sub} {cond.upper()}] Planned: Left={idx_left_plan} {plan_left_tx.center.round(1)}, Right={idx_right_plan} {plan_right_tx.center.round(1)}")
+            log.info(f"  [{sub} {cond.upper()}] Actual:  Left={act_left_tx.index} {act_left_tx.center.round(1)}, Right={act_right_tx.index} {act_right_tx.center.round(1)}")
+
+            actual_txs = [act_left_tx, act_right_tx]
+
+            try:
+                out_img_path = Path(os.path.join(OUTPUT_DIR, f"{sub}_{cond}_planned_vs_actual_positions.png"))
+                plot_planned_vs_actual_mesh(
+                    f"{sub} | {cond.upper()}", mesh_path, planned_txs, actual_txs, out_img_path
+                )
+            except Exception as e:
+                log.exception(f"Failed to generate plot for {sub} {cond.upper()}: {e}")
+
     log.info("Mesh comparative plotting pipeline complete.")

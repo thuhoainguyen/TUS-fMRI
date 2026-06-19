@@ -269,7 +269,7 @@ def plot_mesh_heatmap(subject: str,
     cond_label = "Experimental" if condition.upper() == "EXP" else "Control"
     fig.suptitle(
         f"{subject} | {cond_label} | "
-        f"Actual transducer position heatmap (all recorded frames)",
+        f"Post-hoc transducer position heatmap (all recorded frames)",
         fontsize=13, fontweight="bold", y=1.02, color="black",
     )
     fig.tight_layout(rect=[0, 0, 0.90, 0.97])
@@ -283,7 +283,7 @@ def plot_mesh_heatmap(subject: str,
 if __name__ == "__main__":
     # Setup directory paths relative to root CITRUS folder
     BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    GUM_DIR = os.path.join(BASE, "data", "gum")
+    GUM_DIR = os.path.join(BASE, "data", "gum", "actual")
     SIMNIBS_DIR = os.path.join(BASE, "data", "simnibs")
     OUTPUT_DIR = os.path.join(BASE, "derivatives", "actual_positions")
     

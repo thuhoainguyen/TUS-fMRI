@@ -9,6 +9,7 @@ This script processes subject NIfTI volumes to output two high-quality figures p
 """
 
 import os
+import glob
 import numpy as np
 import nibabel as nib
 import matplotlib
@@ -16,7 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.colors import ListedColormap
-from nilearn import plotting
+from nilearn import plotting, image
 from scipy import ndimage
 
 # ── paths ────────────────────────────────────────────────────────────────────
@@ -40,7 +41,7 @@ def mask_centroid_mm(mask_path: str) -> np.ndarray:
 def add_mask_overlay(display, bin_img, color: str, alpha: float = 1.0) -> None:
     """Overlay a binary mask on a nilearn display with a solid colormap and solid visibility."""
     cmap = ListedColormap([color])
-    display.add_overlay(bin_img, cmap=cmap, threshold=0.1, alpha=alpha)
+    display.add_overlay(bin_img, cmap=cmap, threshold=0.1, transparency=alpha)
 
 
 def binarise(mask_path: str):
@@ -55,12 +56,13 @@ def make_report(sub: str) -> None:
     sub_in  = os.path.join(INPUT_DIR, sub)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    t1w_path     = os.path.join(sub_in, f"{sub}_T1w_kplan.nii.gz")
-    sgacc_l_path = os.path.join(sub_in, "sgACC_BA25_L_kplan.nii.gz")
-    sgacc_r_path = os.path.join(sub_in, "sgACC_BA25_R_kplan.nii.gz")
-    density_path = os.path.join(sub_in, f"{sub}_density_kplan.nii.gz")
+    t1w_path        = os.path.join(sub_in, f"{sub}_T1w_kplan.nii.gz")
+    brain_mask_path = os.path.join(sub_in, f"{sub}_T1w_kplan_brain_mask.nii.gz")
+    sgacc_l_path    = os.path.join(sub_in, "sgACC_BA25_L_kplan.nii.gz")
+    sgacc_r_path    = os.path.join(sub_in, "sgACC_BA25_R_kplan.nii.gz")
+    density_path    = os.path.join(sub_in, f"{sub}_density_kplan.nii.gz")
 
-    for p in (t1w_path, sgacc_l_path, sgacc_r_path, density_path):
+    for p in (t1w_path, brain_mask_path, sgacc_l_path, sgacc_r_path, density_path):
         if not os.path.exists(p):
             raise FileNotFoundError(p)
 
@@ -74,13 +76,21 @@ def make_report(sub: str) -> None:
     x_l = cog_l[0]
     x_r = cog_r[0]
 
-    # Pre-load structural NIfTI images
-    t1w_img     = nib.load(t1w_path)
-    density_img = nib.load(density_path)
+    # Find a planned pressure map to use as reference grid for head cropping (keeps skull, crops neck)
+    plan_dir = os.path.join(BASE, "data", "output", sub, "planning", "exp-focused")
+    press_pattern = os.path.join(plan_dir, "*_pos-*-Pressure.nii.gz")
+    press_files = glob.glob(press_pattern)
+    if not press_files:
+        raise FileNotFoundError(f"No planned pressure map found for {sub} in {plan_dir}")
+    ref_grid_img = nib.load(press_files[0])
+
+    # Load structural images resampled to the pressure simulation grid
+    t1w_img = image.resample_to_img(nib.load(t1w_path), ref_grid_img, interpolation="continuous")
+    density_img = image.resample_to_img(nib.load(density_path), ref_grid_img, interpolation="continuous")
     
-    # Binarise masks
-    sgacc_l_bin = binarise(sgacc_l_path)
-    sgacc_r_bin = binarise(sgacc_r_path)
+    # Binarise and resample masks to the pressure simulation grid
+    sgacc_l_bin = image.resample_to_img(binarise(sgacc_l_path), ref_grid_img, interpolation="nearest")
+    sgacc_r_bin = image.resample_to_img(binarise(sgacc_r_path), ref_grid_img, interpolation="nearest")
 
     # Convert 3D world (mm) coordinates to 3D integer voxel coordinates (slice numbers) using inverse affine matrix
     inv_affine = np.linalg.inv(t1w_img.affine)
@@ -92,13 +102,11 @@ def make_report(sub: str) -> None:
 
     # ── FILE 1: Structural Anatomy Report (T1w and Density, 2 rows × 3 columns) ──
     fig1 = plt.figure(figsize=(15, 7.5), facecolor="black")
-    fig1.suptitle(f"{sub}  –  Anatomy Structural Report", color="white", fontsize=13,
-                  fontweight="bold", y=0.98)
 
     gs1 = gridspec.GridSpec(
         2, 3, figure=fig1,
         hspace=0.06, wspace=0.03,
-        left=0.07, right=0.98, top=0.93, bottom=0.05,
+        left=0.07, right=0.98, top=0.97, bottom=0.05,
     )
 
     col_defs = [
@@ -112,20 +120,19 @@ def make_report(sub: str) -> None:
         ax = fig1.add_subplot(gs1[0, col])
         d = plotting.plot_anat(t1w_img, display_mode=mode, cut_coords=[coord],
                            axes=ax, figure=fig1, **PLOT_KW)
-        ax.set_title(col_title, color="white", fontsize=10, pad=4)
+        ax.set_title(col_title, color="white", fontsize=18, pad=6)
         if col == 0:
             ax.set_ylabel("T1w", color="white", fontsize=9, labelpad=6)
         
         # Coordinate slice number label and R/L labels on Nilearn's cut axis
         for cut_ax in d.axes.values():
-            cut_ax.ax.text(0.03, 0.03, f"{mode} = {slice_num}", color="white", fontsize=8.5,
+            cut_ax.ax.text(0.03, 0.03, f"{mode} = {slice_num}", color="white", fontsize=12.0,
                            transform=cut_ax.ax.transAxes, va="bottom", ha="left", zorder=100,
                            bbox=dict(facecolor="black", alpha=0.6, edgecolor="none", pad=1.5))
             if mode in ("z", "y"):
-                cut_ax.ax.invert_xaxis()
-                cut_ax.ax.text(0.03, 0.8, "L", color="white", fontsize=9.5, fontweight="bold",
+                cut_ax.ax.text(0.03, 0.8, "L", color="white", fontsize=16.0, fontweight="bold",
                                transform=cut_ax.ax.transAxes, va="center", ha="left", zorder=100)
-                cut_ax.ax.text(0.97, 0.8, "R", color="white", fontsize=9.5, fontweight="bold",
+                cut_ax.ax.text(0.97, 0.8, "R", color="white", fontsize=16.0, fontweight="bold",
                                transform=cut_ax.ax.transAxes, va="center", ha="right", zorder=100)
 
     # Row 1: Density Image
@@ -138,14 +145,13 @@ def make_report(sub: str) -> None:
         
         # Coordinate slice number label and R/L labels on Nilearn's cut axis
         for cut_ax in d.axes.values():
-            cut_ax.ax.text(0.03, 0.03, f"{mode} = {slice_num}", color="white", fontsize=8.5,
+            cut_ax.ax.text(0.03, 0.03, f"{mode} = {slice_num}", color="white", fontsize=12.0,
                            transform=cut_ax.ax.transAxes, va="bottom", ha="left", zorder=100,
                            bbox=dict(facecolor="black", alpha=0.6, edgecolor="none", pad=1.5))
             if mode in ("z", "y"):
-                cut_ax.ax.invert_xaxis()
-                cut_ax.ax.text(0.03, 0.8, "L", color="white", fontsize=9.5, fontweight="bold",
+                cut_ax.ax.text(0.03, 0.8, "L", color="white", fontsize=16.0, fontweight="bold",
                                transform=cut_ax.ax.transAxes, va="center", ha="left", zorder=100)
-                cut_ax.ax.text(0.97, 0.8, "R", color="white", fontsize=9.5, fontweight="bold",
+                cut_ax.ax.text(0.97, 0.8, "R", color="white", fontsize=16.0, fontweight="bold",
                                transform=cut_ax.ax.transAxes, va="center", ha="right", zorder=100)
 
     report_path1 = os.path.join(OUTPUT_DIR, f"{sub}_anatomy_report.png")
@@ -156,13 +162,11 @@ def make_report(sub: str) -> None:
 
     # ── FILE 2: sgACC Overlay Report (1 row × 4 columns) ──
     fig2 = plt.figure(figsize=(18, 4.5), facecolor="black")
-    fig2.suptitle(f"{sub}  –  sgACC Target Localization Overlay Report", color="white", fontsize=13,
-                  fontweight="bold", y=0.98)
 
     gs2 = gridspec.GridSpec(
         1, 4, figure=fig2,
         wspace=0.03,
-        left=0.07, right=0.98, top=0.88, bottom=0.05,
+        left=0.07, right=0.98, top=0.92, bottom=0.05,
     )
 
     overlay_defs = [
@@ -184,21 +188,20 @@ def make_report(sub: str) -> None:
         if show_R:
             add_mask_overlay(d, sgacc_r_bin, color="red")
             
-        ax.set_title(title, color="white", fontsize=10, pad=4)
+        ax.set_title(title, color="white", fontsize=18, pad=6)
         
         if col == 0:
             ax.set_ylabel("T1w + sgACC\n(L=yellow  R=red)", color="white", fontsize=9, labelpad=6)
             
         # Coordinate slice number label and R/L labels on Nilearn's cut axis
         for cut_ax in d.axes.values():
-            cut_ax.ax.text(0.03, 0.03, f"{slice_var} = {slice_num}", color="white", fontsize=8.5,
+            cut_ax.ax.text(0.03, 0.03, f"{slice_var} = {slice_num}", color="white", fontsize=12.0,
                            transform=cut_ax.ax.transAxes, va="bottom", ha="left", zorder=100,
                            bbox=dict(facecolor="black", alpha=0.6, edgecolor="none", pad=1.5))
             if mode in ("z", "y"):
-                cut_ax.ax.invert_xaxis()
-                cut_ax.ax.text(0.03, 0.8, "L", color="white", fontsize=9.5, fontweight="bold",
+                cut_ax.ax.text(0.03, 0.8, "L", color="white", fontsize=16.0, fontweight="bold",
                                transform=cut_ax.ax.transAxes, va="center", ha="left", zorder=100)
-                cut_ax.ax.text(0.97, 0.8, "R", color="white", fontsize=9.5, fontweight="bold",
+                cut_ax.ax.text(0.97, 0.8, "R", color="white", fontsize=16.0, fontweight="bold",
                                transform=cut_ax.ax.transAxes, va="center", ha="right", zorder=100)
 
     report_path2 = os.path.join(OUTPUT_DIR, f"{sub}_sgacc_overlay_report.png")

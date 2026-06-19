@@ -489,7 +489,7 @@ def plot_map_mosaic(subject: str,
     cbar.ax.text(0.5, 1.02, f"max\n{peak_val:.3g}", transform=cbar.ax.transAxes,
                  color="white", fontsize=7, ha="center", va="bottom", fontweight="bold")
 
-    fig.suptitle(f"{subject} | {title}", color="white", fontsize=12, fontweight="bold")
+    # fig.suptitle(f"{subject} | {title}", color="white", fontsize=12, fontweight="bold")
     fig.savefig(out_path, dpi=220, facecolor="black", bbox_inches="tight")
     plt.close(fig)
 
@@ -510,10 +510,31 @@ def find_map_file(dir_path: Path, side_letter: str, map_type: str) -> Optional[P
     """
     if not dir_path.exists():
         return None
-    pattern = f"*Tx-2_{side_letter}_pos-* - {map_type}.nii.gz"
-    files = list(dir_path.glob(pattern))
-    if files:
-        return files[0]
+    # Support both naming styles: "...-Pressure.nii.gz" and "... - Pressure.nii.gz"
+    for pattern in [
+        f"*Tx-2_{side_letter}_pos-*-{map_type}.nii.gz",
+        f"*Tx-2_{side_letter}_pos-* - {map_type}.nii.gz",
+    ]:
+        files = list(dir_path.glob(pattern))
+        if files:
+            return files[0]
+    return None
+
+
+def load_roi_centroid(input_dir: Path, sub: str, roi_name: str) -> Optional[Tuple[float, float, float]]:
+    """Load the ROI centroid coordinates (voxels in T1 space) from roi_centroids.txt."""
+    file_path = input_dir / sub / "roi_centroids.txt"
+    if not file_path.exists():
+        return None
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        for line in lines[1:]:
+            parts = line.strip().split()
+            if len(parts) >= 5 and parts[0] == sub and parts[1] == roi_name:
+                return float(parts[2]), float(parts[3]), float(parts[4])
+    except Exception as e:
+        log.warning(f"Failed to parse roi_centroids.txt for {sub}: {e}")
     return None
 
 
@@ -598,8 +619,33 @@ if __name__ == "__main__":
                     brain_mask = _fill_holes(brain_mask)
                     brain_mask = _bin_erode(brain_mask, iterations=2)
 
-                center_vox = mask_centroid_vox(sg_ref, 0.5)
-                center_world = voxel_to_world(center_vox, ref_img.affine)
+                # Load precise sgACC centroid from roi_centroids.txt
+                centroid_t1 = load_roi_centroid(Path(INPUT_DIR), sub, f"sgACC_BA25_{side_letter}")  #//$NON-NLS-1$
+                if centroid_t1 is not None:
+                    # roi_centroids.txt stores coordinates already in mm world space.
+                    centroid_world_3d = np.array([centroid_t1[0], centroid_t1[1], centroid_t1[2]])
+                    # Convert world mm → pressure map voxel space.
+                    centroid_world = np.append(centroid_world_3d, 1.0)
+                    center_vox = (np.linalg.inv(ref_img.affine) @ centroid_world)[:3]
+                else:
+                    center_vox = mask_centroid_vox(sg_ref, 0.5)
+                    centroid_world_3d = voxel_to_world(center_vox, ref_img.affine)
+
+                center_world = centroid_world_3d
+
+                # Determine identical slices along X, Y, and Z using fixed voxel spans
+                spans = {0: 50, 1: 45, 2: 37}
+                c_x = int(round(center_vox[0]))
+                vals_x = np.linspace(c_x - spans[0], c_x + spans[0], 7).round().astype(int)
+                mosaic_x_vox = sorted(list(set(int(v) for v in np.clip(vals_x, 0, ref_img.shape[0] - 1))))
+
+                c_y = int(round(center_vox[1]))
+                vals_y = np.linspace(c_y - spans[1], c_y + spans[1], 7).round().astype(int)
+                mosaic_y_vox = sorted(list(set(int(v) for v in np.clip(vals_y, 0, ref_img.shape[1] - 1))))
+
+                c_z = int(round(center_vox[2]))
+                vals_z = np.linspace(c_z - spans[2], c_z + spans[2], 7).round().astype(int)
+                mosaic_z_vox = sorted(list(set(int(v) for v in np.clip(vals_z, 0, ref_img.shape[2] - 1))))
 
                 # Define standard scale maximums
                 pressure_vmax = float(np.nanmax(pplan))
@@ -610,13 +656,14 @@ if __name__ == "__main__":
 
                 # 4. Generate whole-head mosaics
                 for kind, vol, cmap, vmin, vmax, unit, label in [
-                    ("planned_pressure", pplan, PRESSURE_CMAP, 0.0, pressure_vmax, "Pressure (MPa)", "planning pressure"),
-                    ("planned_temperature", tplan, TEMP_CMAP, temperature_vmin, temperature_vmax, "Temperature (C)", "planning temperature"),
+                    ("planned_pressure", pplan, PRESSURE_CMAP, 0.0, pressure_vmax, "Pressure (MPa)", "planning pressure"),  #//$NON-NLS-1$  #//$NON-NLS-1$  #//$NON-NLS-1$
+                    ("planned_temperature", tplan, TEMP_CMAP, temperature_vmin, temperature_vmax, "Temperature (C)", "planning temperature"),  #//$NON-NLS-1$  #//$NON-NLS-1$  #//$NON-NLS-1$
                 ]:
-                    op = Path(os.path.join(DERIVATIVES_DIR, f"{sub}_{kind}_{cond}_{side}_mosaic.png"))
-                    log.info(f"    Generating planned whole-head mosaic: {op.name}")
-                    plot_map_mosaic(sub, f"{COND_TITLE[cond]} {SIDE_TITLE[side]} {label}", t1_ref, vol, sg_ref,
-                                    center_vox, cmap, vmin, vmax, unit, op)
+                    op = Path(os.path.join(DERIVATIVES_DIR, f"{sub}_{kind}_{cond}_{side}_mosaic.png"))  #//$NON-NLS-1$
+                    log.info(f"    Generating planned whole-head mosaic: {op.name}")  #//$NON-NLS-1$
+                    plot_map_mosaic(sub, f"{COND_TITLE[cond]} {SIDE_TITLE[side]} {label}", t1_ref, vol, sg_ref,  #//$NON-NLS-1$
+                                    center_vox, cmap, vmin, vmax, unit, op,
+                                    mosaic_x=mosaic_x_vox, mosaic_y=mosaic_y_vox, mosaic_z=mosaic_z_vox)
 
                 # 5. Extract planned focal volume details
                 try:
